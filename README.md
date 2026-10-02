@@ -19,6 +19,124 @@
   </p>
 </p>
 
+## This branch: `ios` (GhosttyKit for iOS, host-fed I/O)
+
+> A fork branch, not upstream Ghostty. It is Ghostty **1.3.1** (tag
+> `v1.3.1`, built with Zig 0.15.2) plus a small set of commits that make
+> GhosttyKit work in a UIKit app whose terminal bytes come from the network
+> (an SSH channel, a WebSocket) rather than from a local process. No pull
+> request upstream is intended.
+
+### What it adds
+
+| Commit | What | Ported from |
+| --- | --- | --- |
+| `termio: add a host-managed IO backend for embedders` | `src/termio/HostManaged.zig`; a surface with no process and no pty | libghostty-spm `0002-host-managed-io.patch` (C API shape); VVTerm `Callback.zig` (CRLF in linefeed mode) |
+| `build: add -Dxcframework-target=native-ios` | native macOS slice (as `native` builds it) + `ios-arm64` + `ios-arm64-simulator`; `universal` still emits the iOS slices too | — |
+| `deps: carry libxev's iOS mach-port fix` | `vendor/libxev` = the pinned libxev 34fa508 + upstream 7bf2b2f | libxev #204 (Erik Langille) |
+| `embedded: size the renderer's layer on iOS; start at the view's size` | the IOSurfaceLayer follows `set_size`/`set_content_scale`; ±1 px tolerance on iOS | libghostty-spm `0005` (tolerance) |
+| `input: iOS keycodes are USB HID usages` | `ghostty_surface_key` keycode on iOS = `UIKey.keyCode` | — |
+| `termio: report each host-managed size once` | no duplicate resize callbacks | — |
+| `example: iOS host-managed demo` | `example/ios-hosted`: UIKit app + WebSocket fake host + headless simulator test | — |
+
+Without the libxev fix nothing works on iOS: Ghostty's io and renderer
+threads never wake, so nothing is drawn and nothing the terminal writes
+(keys, query replies, resizes) ever leaves it.
+
+Everything for macOS is unchanged: the new backend is opt-in (the default
+is `GHOSTTY_SURFACE_IO_BACKEND_EXEC`), and the other changes are behind
+`builtin.os.tag == .ios`. `ghostty_surface_config_s` gained four fields
+after `userdata`, so hosts must be recompiled against the new header
+(source compatible; `ghostty_surface_config_new()` fills the defaults).
+
+### Build
+
+```sh
+zig version   # 0.15.2
+zig build -Doptimize=ReleaseFast -Demit-xcframework=true -Demit-macos-app=false \
+    -Dxcframework-target=native-ios -Dsentry=false
+# -> macos/GhosttyKit.xcframework/{macos-arm64,ios-arm64,ios-arm64-simulator}
+```
+
+`-Dxcframework-target=universal` gives `macos-arm64_x86_64` plus the same
+two iOS slices. The deployment target is iOS 17. Link the app with
+`-lc++` and Metal, CoreText, IOSurface and QuartzCore.
+
+### Host-fed I/O API (`include/ghostty.h`)
+
+```c
+ghostty_surface_config_s cfg = ghostty_surface_config_new();
+cfg.platform_tag = GHOSTTY_PLATFORM_IOS;
+cfg.platform.ios.uiview = (__bridge void *)view;
+cfg.backend = GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED;
+cfg.receive_userdata = ctx;        // defaults to cfg.userdata
+cfg.receive_buffer = on_bytes;     // void (*)(void*, const uint8_t*, size_t), required
+cfg.receive_resize = on_resize;    // void (*)(void*, uint16_t cols, uint16_t rows,
+                                   //          uint32_t width_px, uint32_t height_px)
+ghostty_surface_t s = ghostty_surface_new(app, &cfg);
+
+ghostty_surface_write_buffer(s, bytes, len);   // remote program's output, into the terminal
+ghostty_surface_process_exit(s, code, ms);     // remote program exited
+```
+
+* `receive_buffer` and `receive_resize` run on the surface's io thread:
+  copy the bytes and hop to your own queue. `receive_buffer` carries
+  keyboard input and the terminal's replies to queries (DA, DSR, OSC
+  colour queries…); `receive_resize` fires when the io thread starts and
+  on every size change, and reports pixel-only changes too.
+* `ghostty_surface_write_buffer` parses synchronously under the terminal
+  lock. Call it from any thread except the io thread (the example uses a
+  serial background queue); chunks may split escape sequences or UTF-8
+  anywhere. Both calls are no-ops on an exec surface.
+* Same names and semantics as libghostty-spm's host-managed IO, so a host
+  can move between the two.
+
+### What a UIKit host does
+
+See `example/ios-hosted/Sources`: one `ghostty_app_t` ticked on the main
+queue from `wakeup_cb`; a `UIView` passed as `uiview`; on layout,
+`ghostty_surface_set_content_scale(scale)` and `ghostty_surface_set_size`
+in pixels (the library sizes its layer to match); keys through
+`ghostty_surface_key` with `keycode = UIKey.keyCode` (HID usage) or 0 and
+`text` for the soft keyboard; clipboard through the runtime clipboard
+callbacks (`UIPasteboard`) and `ghostty_surface_complete_clipboard_request`.
+No display link is needed: the renderer thread draws on change and the
+layer is updated on the main queue.
+
+### Proving it
+
+```sh
+example/ios-hosted/run-simulator.sh   # after the native-ios build above
+```
+
+creates and boots a simulator with `simctl` only (no Simulator.app),
+builds the demo, runs it against `fake_terminal_server.py` (Infinite's
+`/terminal` framing: binary frames both ways, `{"resize":{"cols","rows"}}`
+text frames), types through the keyboard code paths, resizes the view,
+takes two screenshots and checks the bytes the server received
+(`check_frames.py`).
+
+### Stubbed or not done
+
+* Selection, scrollback scrolling and mouse reporting: the C calls exist
+  (`ghostty_surface_mouse_*`), but no touch gestures drive them and none of
+  it has been tried on iOS.
+* Text input is `UIKeyInput` only: no `UITextInput`, so no marked text
+  (IME composition), autocorrect or dictation; `ghostty_surface_preedit`
+  is unused.
+* Keybindings are Ghostty's defaults (Mac-style `super+…`); with a hardware
+  keyboard, Cmd shortcuts reach them, untested.
+* The host must stop rendering in the background (iOS kills apps that use
+  the GPU there): call `ghostty_surface_set_occlusion(s, false)` on
+  `didEnterBackground`.
+* Only tried on the iOS 26.3 simulator (iPhone 17 Pro), not on a device.
+* Emoji: on that simulator runtime they draw as LastResort boxes, because
+  CoreText resolves Apple Color Emoji to `Fonts/Core/AppleColorEmoji.ttc`,
+  which the runtime does not contain (it ships `CoreAddition/…-160px.ttc`).
+  CJK, Hangul and symbol fallback work. Emoji on a device: untested.
+* Theme files: the resources directory is not looked up on iOS; set colours
+  in the config.
+
 ## About
 
 Ghostty is a terminal emulator that differentiates itself by being

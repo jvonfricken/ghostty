@@ -1,0 +1,25 @@
+name: GhosttyHosted
+options:
+  bundleIdPrefix: dev.ghostty.example
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  GhosttyHosted:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - framework: ../../macos/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: CoreText.framework
+      - sdk: IOSurface.framework
+      - sdk: QuartzCore.framework
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        OTHER_LDFLAGS: "-lc++"
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: "5.0"
+        ARCHS: arm64
