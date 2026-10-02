@@ -26,6 +26,11 @@ resize_cb: ?Config.Resize = null,
 grid_size: renderer.GridSize = .{ .columns = 0, .rows = 0 },
 screen_size: renderer.ScreenSize = .{ .width = 0, .height = 0 },
 
+/// The last size given to the resize callback, so a resize to the size the
+/// host already has (the first one after the thread starts, usually) is not
+/// reported twice.
+reported: ?[4]u32 = null,
+
 pub const Config = struct {
     /// Called on the termio thread with bytes the terminal emits.
     pub const Write = *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void;
@@ -147,6 +152,14 @@ pub fn childExitedAbnormally(
 
 fn notifyResize(self: *HostManaged) void {
     const cb = self.resize_cb orelse return;
+    const now: [4]u32 = .{
+        self.grid_size.columns,
+        self.grid_size.rows,
+        self.screen_size.width,
+        self.screen_size.height,
+    };
+    if (self.reported) |last| if (std.mem.eql(u32, &last, &now)) return;
+    self.reported = now;
     cb(
         self.userdata,
         self.grid_size.columns,
