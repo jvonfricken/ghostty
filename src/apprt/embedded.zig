@@ -513,6 +513,23 @@ pub const Surface = struct {
             .cursor_pos = .{ .x = -1, .y = -1 },
         };
 
+        // iOS: start at the view's real size rather than 800x600, so the
+        // first grid size the termio backend reports (a host-managed host
+        // opens its remote session with it) is already right.
+        if (comptime builtin.os.tag == .ios) ios: {
+            const view = switch (self.platform) {
+                .ios => |v| v.uiview,
+                else => break :ios,
+            };
+            const bounds = view.getProperty(CGRect, "bounds");
+            const w = bounds.width * opts.scale_factor;
+            const h = bounds.height * opts.scale_factor;
+            if (w >= 1 and h >= 1) self.size = .{
+                .width = @intFromFloat(w),
+                .height = @intFromFloat(h),
+            };
+        }
+
         // Add ourselves to the list of surfaces on the app.
         try app.core_app.addSurface(self);
         errdefer app.core_app.deleteSurface(self);
@@ -626,6 +643,44 @@ pub const Surface = struct {
             var font_size = self.core_surface.font_size;
             font_size.points = opts.font_size;
             try self.core_surface.setFontSize(font_size);
+        }
+
+        // iOS: the renderer added its layer to the view; size it.
+        self.syncIOSLayer();
+    }
+
+    /// CGRect, for UIKit geometry.
+    const CGRect = extern struct { x: f64, y: f64, width: f64, height: f64 };
+
+    /// iOS: the renderer draws into an IOSurfaceLayer that it adds as a
+    /// sublayer of the host's UIView (a UIView's own layer cannot be
+    /// replaced, unlike an NSView's). Nothing in UIKit sizes a sublayer, so
+    /// keep it at the surface's size in points and at its content scale
+    /// whenever the host reports either. The renderer reads its drawable
+    /// size from this layer. Must run on the main thread, as the size and
+    /// content-scale calls already do.
+    fn syncIOSLayer(self: *Surface) void {
+        if (comptime builtin.os.tag != .ios) return;
+        const view = switch (self.platform) {
+            .ios => |v| v.uiview,
+            else => return,
+        };
+        const cls = objc.getClass("IOSurfaceLayer") orelse return;
+        const layer = view.getProperty(objc.Object, "layer");
+        const sublayers = objc.Object.fromId(layer.getProperty(?*anyopaque, "sublayers") orelse return);
+        const scale: f64 = @max(1, self.content_scale.x);
+        const frame: CGRect = .{
+            .x = 0,
+            .y = 0,
+            .width = @as(f64, @floatFromInt(self.size.width)) / scale,
+            .height = @as(f64, @floatFromInt(self.size.height)) / scale,
+        };
+        const count = sublayers.getProperty(usize, "count");
+        for (0..count) |i| {
+            const sub = sublayers.msgSend(objc.Object, objc.sel("objectAtIndex:"), .{i});
+            if (!sub.msgSend(bool, objc.sel("isKindOfClass:"), .{cls.value})) continue;
+            sub.setProperty("contentsScale", scale);
+            sub.setProperty("frame", frame);
         }
     }
 
@@ -843,6 +898,8 @@ pub const Surface = struct {
             log.err("error in content scale callback err={}", .{err});
             return;
         };
+
+        self.syncIOSLayer();
     }
 
     pub fn updateSize(self: *Surface, width: u32, height: u32) void {
@@ -856,6 +913,9 @@ pub const Surface = struct {
             .width = width,
             .height = height,
         };
+
+        // Resize our iOS layer first: the renderer reads its size from it.
+        self.syncIOSLayer();
 
         // Call the primary callback.
         self.core_surface.sizeCallback(self.size) catch |err| {

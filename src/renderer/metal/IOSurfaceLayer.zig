@@ -3,6 +3,7 @@
 const IOSurfaceLayer = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const objc = @import("objc");
 const macos = @import("macos");
@@ -107,7 +108,18 @@ fn setSurfaceCallback(
     const scale = layer.getProperty(f64, "contentsScale");
     const width: usize = @intFromFloat(bounds.size.width * scale);
     const height: usize = @intFromFloat(bounds.size.height * scale);
-    if (width != surface.getWidth() or height != surface.getHeight()) {
+    // iOS: the host sizes this layer in points from a pixel size, and the
+    // round trip through the scale can land a pixel short (UIKit rounding).
+    // Allow that one pixel there; anything more is a frame drawn for an
+    // earlier size. macOS still requires an exact match. From
+    // libghostty-spm's Patches/ghostty/0005-ios-metal-rendering.sh
+    // (MIT, @Lakr233).
+    const drift: usize = if (comptime builtin.os.tag == .ios) 1 else 0;
+    const sw = surface.getWidth();
+    const sh = surface.getHeight();
+    const dw = if (width > sw) width - sw else sw - width;
+    const dh = if (height > sh) height - sh else sh - height;
+    if (dw > drift or dh > drift) {
         log.debug(
             "setSurfaceCallback(): surface is wrong size for layer, discarding. surface = {d}x{d}, layer = {d}x{d}",
             .{ surface.getWidth(), surface.getHeight(), width, height },
