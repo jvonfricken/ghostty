@@ -8,8 +8,13 @@ const Key = @import("key.zig").Key;
 
 /// The full list of entries for the current platform.
 pub const entries: []const Entry = entries: {
+    // iOS reports keys as USB HID usages (UIKey.keyCode is a
+    // UIKeyboardHIDUsage), not as Mac virtual keycodes, so its native code
+    // is the usage within the keyboard page (0x07), taken from the usb
+    // column below.
     const native_idx = switch (builtin.os.tag) {
-        .ios, .macos => 4, // mac
+        .ios => 0, // usb (see below)
+        .macos => 4, // mac
         .windows => 3, // win
         .freebsd, .linux => 2, // xkb
         else => @compileError("unsupported platform"),
@@ -22,7 +27,10 @@ pub const entries: []const Entry = entries: {
             .key = code_to_key.get(raw[5]) orelse .unidentified,
             .usb = raw[0],
             .code = raw[5],
-            .native = raw[native_idx],
+            .native = if (builtin.os.tag == .ios)
+                (if (raw[0] >> 16 == 0x07) raw[0] & 0xFFFF else 0xFFFF)
+            else
+                raw[native_idx],
         };
     }
 
