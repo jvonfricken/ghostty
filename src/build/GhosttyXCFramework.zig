@@ -82,6 +82,24 @@ pub fn init(
                 .headers = b.path("include"),
                 .dsym = macos_native.dsym,
             }},
+
+            .@"native-ios" => &.{
+                .{
+                    .library = macos_native.output,
+                    .headers = b.path("include"),
+                    .dsym = macos_native.dsym,
+                },
+                .{
+                    .library = ios.output,
+                    .headers = b.path("include"),
+                    .dsym = ios.dsym,
+                },
+                .{
+                    .library = ios_sim.output,
+                    .headers = b.path("include"),
+                    .dsym = ios_sim.dsym,
+                },
+            },
         },
     });
 
