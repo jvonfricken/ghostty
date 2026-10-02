@@ -9,8 +9,8 @@
 
         .libxev = .{
             // mitchellh/libxev
-            .url = "https://deps.files.ghostty.org/libxev-34fa50878aec6e5fa8f532867001ab3c36fae23e.tar.gz",
-            .hash = "libxev-0.0.0-86vtc4IcEwCqEYxEYoN_3KXmc6A9VLcm22aVImfvecYs",
+            // 34fa508 plus the iOS mach-port fix; see vendor/libxev/README.ghostty-ios.md
+            .path = "./vendor/libxev",
             .lazy = true,
         },
         .vaxis = .{
